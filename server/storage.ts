@@ -277,16 +277,29 @@ export class DatabaseStorage implements IStorage {
 
   async getAvailableCoursesForStudent(studentId: number): Promise<Course[]> {
     // Get all active courses
-    const allActiveCourses = await db.select().from(courses).where(eq(courses.status, "active"));
-    
+    // (moved filtering of enrolled courses into the DB layer)
+
     // Get all courses the student is already enrolled in
-    const studentEnrollments = await db.select().from(enrollments).where(eq(enrollments.studentId, studentId));
+    const studentEnrollments = await db
+      .select()
+      .from(enrollments)
+      .where(eq(enrollments.studentId, studentId));
     const enrolledCourseIds = studentEnrollments.map(e => e.courseId);
 
-    // Filter out enrolled courses
-    const availableCourses = allActiveCourses.filter(course => !enrolledCourseIds.includes(course.id));
-    
-    return availableCourses;
+    if (enrolledCourseIds.length === 0) {
+      return await db
+        .select()
+        .from(courses)
+        .where(eq(courses.status, "active"));
+    }
+
+    return await db
+      .select()
+      .from(courses)
+      .where(and(
+        eq(courses.status, "active"),
+        notInArray(courses.id, enrolledCourseIds)   // drizzle `inArray` helper
+      ));
   }
 
   async enrollStudentInCourse(studentId: number, courseId: number): Promise<Enrollment | { error: string }> {
