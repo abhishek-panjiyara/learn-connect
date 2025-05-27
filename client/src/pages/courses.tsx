@@ -12,6 +12,14 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
+/**
+ * Displays and manages courses for authenticated users, providing role-based functionality for teachers and students.
+ *
+ * Teachers can view, search, and manage their courses, as well as create new ones. Students can view enrolled courses, search available courses, and enroll in new courses. The component handles loading, error, and empty states for both enrolled and available courses, and updates the UI reactively based on user actions and API responses.
+ *
+ * @remark
+ * The available courses section and enrollment actions are only accessible to students. Teachers see management options and course creation controls.
+ */
 export default function Courses() {
   const { user } = useAuth();
   const { toast } = useToast();

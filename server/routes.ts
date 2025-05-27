@@ -35,6 +35,18 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
+/**
+ * Registers all API routes for authentication, user management, courses, content, assignments, submissions, enrollments, and dashboard statistics on the provided Express app, and returns an HTTP server instance.
+ *
+ * Routes include user registration, login/logout, profile management, course listing and enrollment, content and assignment management, submission handling, and dashboard statistics, with role-based access control and input validation.
+ *
+ * @param app - The Express application instance to register routes on.
+ * @returns An HTTP server instance with all routes registered.
+ *
+ * @remark
+ * - All routes use role-based access control and input validation.
+ * - Error responses use appropriate HTTP status codes for unauthorized, forbidden, not found, conflict, and validation errors.
+ */
 export async function registerRoutes(app: Express): Promise<Server> {
   // Auth routes
   app.post("/api/auth/login", async (req: AuthenticatedRequest, res) => {
