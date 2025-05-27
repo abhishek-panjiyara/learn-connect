@@ -9,7 +9,10 @@ import StudentDashboard from "@/pages/student-dashboard";
 import Courses from "@/pages/courses";
 import ContentManagement from "@/pages/content-management";
 import Assignments from "@/pages/assignments";
+import CourseContentPage from "@/pages/course-content";
 import NotFound from "@/pages/not-found";
+import ProfilePage from "@/pages/profile";
+import SubmitAssignmentPage from "@/pages/submit-assignment"; // Import the SubmitAssignmentPage component
 import { useAuth } from "@/hooks/use-auth";
 
 function ProtectedRoute({ component: Component, allowedRoles }: { component: any, allowedRoles?: string[] }) {
@@ -43,6 +46,9 @@ function Router() {
       <Route path="/courses" component={() => <ProtectedRoute component={Courses} />} />
       <Route path="/content" component={() => <ProtectedRoute component={ContentManagement} allowedRoles={["teacher"]} />} />
       <Route path="/assignments" component={() => <ProtectedRoute component={Assignments} />} />
+      <Route path="/profile" component={() => <ProtectedRoute component={ProfilePage} />} />
+      <Route path="/courses/:courseId/content" component={() => <ProtectedRoute component={CourseContentPage} />} />
+      <Route path="/courses/:courseId/assignments/:assignmentId/submit" component={() => <ProtectedRoute component={SubmitAssignmentPage} />} /> {/* Add assignment submission route */}
       <Route component={NotFound} />
     </Switch>
   );

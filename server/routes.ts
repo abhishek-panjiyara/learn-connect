@@ -8,8 +8,21 @@ import {
   insertAssignmentSchema,
   insertSubmissionSchema,
   insertEnrollmentSchema,
+  selectUserSchema, // Added for profile response
 } from "@shared/schema";
 import { z } from "zod";
+
+// Schema for updating profile
+const updateUserProfileSchema = z.object({
+  name: z.string().min(1, "Name cannot be empty").optional(),
+  avatar: z.string().url("Invalid URL format").optional(),
+});
+
+// Schema for submitting/updating an assignment
+const submissionContentSchema = z.object({
+  content: z.string().min(1, "Submission content cannot be empty."),
+  submissionId: z.number().optional(), // For updating existing submission
+});
 
 // Extend Express Request type to include session
 interface AuthenticatedRequest extends Request {
@@ -95,7 +108,77 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Profile routes
+  app.get("/api/users/profile", requireAuth, async (req: AuthenticatedRequest, res) => {
+    // req.user is populated by requireAuth middleware
+    const { password: _, ...userWithoutPassword } = req.user;
+    res.json(selectUserSchema.parse(userWithoutPassword));
+  });
+
+  app.put("/api/users/profile", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      const dataToUpdate = updateUserProfileSchema.parse(req.body);
+
+      if (Object.keys(dataToUpdate).length === 0) {
+        return res.status(400).json({ message: "No fields to update" });
+      }
+
+      const updatedUser = await storage.updateUser(req.user.id, dataToUpdate);
+      const { password: _, ...userWithoutPassword } = updatedUser;
+      res.json(selectUserSchema.parse(userWithoutPassword));
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid profile data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to update profile" });
+    }
+  });
+
   // Course routes
+  app.get("/api/courses/available", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      if (req.user?.role !== "student") {
+        return res.status(403).json({ message: "Only students can view available courses." });
+      }
+      const courses = await storage.getAvailableCoursesForStudent(req.user.id);
+      res.json(courses);
+    } catch (error) {
+      console.error("Error fetching available courses:", error);
+      res.status(500).json({ message: "Failed to fetch available courses." });
+    }
+  });
+
+  app.post("/api/courses/:courseId/enroll", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      if (req.user?.role !== "student") {
+        return res.status(403).json({ message: "Only students can enroll in courses." });
+      }
+      const courseId = parseInt(req.params.courseId, 10);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID." });
+      }
+
+      const result = await storage.enrollStudentInCourse(req.user.id, courseId);
+
+      if ('error' in result) {
+        // Check if the error is due to already being enrolled or course not found/active
+        if (result.error === "Student is already enrolled in this course.") {
+            return res.status(409).json({ message: result.error }); // 409 Conflict
+        }
+        if (result.error === "Course not found." || result.error === "Course is not active and cannot be enrolled in.") {
+            return res.status(404).json({ message: result.error }); // 404 Not Found
+        }
+        // For other errors, like transaction failure
+        return res.status(500).json({ message: result.error });
+      }
+
+      res.status(201).json(result);
+    } catch (error) {
+      console.error("Error enrolling in course:", error);
+      res.status(500).json({ message: "Failed to enroll in course." });
+    }
+  });
+
   app.get("/api/courses", requireAuth, async (req: any, res) => {
     try {
       let courses;
@@ -158,13 +241,50 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Content routes
-  app.get("/api/courses/:courseId/content", requireAuth, async (req: any, res) => {
+  app.get("/api/courses/:courseId/content", requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const courseId = parseInt(req.params.courseId);
-      const content = await storage.getContentByCourse(courseId);
-      res.json(content);
+      const courseId = parseInt(req.params.courseId, 10);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID." });
+      }
+
+      // For now, focusing on student access as per subtask.
+      // Teacher access (own course) could be added here as an enhancement.
+      if (req.user?.role === "student") {
+        const courseWithContent = await storage.getCourseWithContentForStudent(courseId, req.user.id);
+
+        if ('error' in courseWithContent) {
+          if (courseWithContent.error === "Student is not enrolled in this course.") {
+            return res.status(403).json({ message: courseWithContent.error });
+          }
+          if (courseWithContent.error === "Course not found.") {
+            return res.status(404).json({ message: courseWithContent.error });
+          }
+          // Other storage errors
+          return res.status(500).json({ message: courseWithContent.error });
+        }
+        return res.json(courseWithContent);
+      } else if (req.user?.role === "teacher") {
+        // Basic teacher access: allow if they own the course
+        const courseDetails = await storage.getCourse(courseId);
+        if (!courseDetails) {
+          return res.status(404).json({ message: "Course not found." });
+        }
+        if (courseDetails.teacherId !== req.user.id) {
+          return res.status(403).json({ message: "You are not authorized to view this course's content." });
+        }
+        // Fetch content separately for teacher (could be refactored into a storage method too)
+        const courseContentItems = await storage.getContentByCourse(courseId);
+        return res.json({ ...courseDetails, content: courseContentItems });
+
+      } else {
+        // Should not happen if roles are properly defined
+        return res.status(403).json({ message: "Access denied." });
+      }
+
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch content" });
+      console.error("Error fetching course content:", error);
+      res.status(500).json({ message: "Failed to fetch course content." });
     }
   });
 
@@ -227,22 +347,71 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Assignment routes
-  app.get("/api/assignments", requireAuth, async (req: any, res) => {
+  app.get("/api/courses/:courseId/assignments", requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      let assignments;
-      if (req.user.role === "teacher") {
-        assignments = await storage.getAssignmentsByTeacher(req.user.id);
-      } else {
-        // For students, get assignments from enrolled courses
-        const enrollments = await storage.getEnrollmentsByStudent(req.user.id);
-        const courseIds = enrollments.map(e => e.courseId);
-        assignments = [];
-        for (const courseId of courseIds) {
-          const courseAssignments = await storage.getAssignmentsByCourse(courseId);
-          assignments.push(...courseAssignments);
-        }
+      const courseId = parseInt(req.params.courseId, 10);
+      if (isNaN(courseId)) {
+        return res.status(400).json({ message: "Invalid course ID." });
       }
-      res.json(assignments);
+
+      const assignmentsData = await storage.getAssignmentsForCourse(courseId, req.user.id, req.user.role);
+      if ('error' in assignmentsData) {
+        if (assignmentsData.error === "Course not found.") return res.status(404).json({ message: assignmentsData.error });
+        if (assignmentsData.error === "Teacher not authorized for this course." || assignmentsData.error === "Student not enrolled in this course.") {
+          return res.status(403).json({ message: assignmentsData.error });
+        }
+        return res.status(500).json({ message: assignmentsData.error });
+      }
+      res.json(assignmentsData);
+    } catch (error) {
+      console.error("Error fetching assignments for course:", error);
+      res.status(500).json({ message: "Failed to fetch assignments." });
+    }
+  });
+  
+  // This is the new endpoint for students submitting work
+  app.post("/api/assignments/:assignmentId/submit", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      if (req.user?.role !== 'student') {
+        return res.status(403).json({ message: "Only students can submit assignments." });
+      }
+      
+      const assignmentId = parseInt(req.params.assignmentId, 10);
+      if (isNaN(assignmentId)) {
+        return res.status(400).json({ message: "Invalid assignment ID." });
+      }
+
+      const { content, submissionId } = submissionContentSchema.parse(req.body);
+
+      const submissionResult = await storage.createOrUpdateSubmission(assignmentId, req.user.id, content, submissionId);
+
+      if ('error' in submissionResult) {
+        if (submissionResult.error.includes("not found")) return res.status(404).json({ message: submissionResult.error });
+        if (submissionResult.error.includes("not enrolled")) return res.status(403).json({ message: submissionResult.error });
+        return res.status(400).json({ message: submissionResult.error }); // Other validation errors from storage
+      }
+      res.status(submissionId ? 200 : 201).json(submissionResult); // 200 for update, 201 for create
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid submission data.", errors: error.errors });
+      }
+      console.error("Error submitting assignment:", error);
+      res.status(500).json({ message: "Failed to submit assignment." });
+    }
+  });
+
+  // General GET /api/assignments (can be kept for teacher overview or admin, or removed if not needed)
+  app.get("/api/assignments", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+      // This route might need more specific logic based on who is accessing it.
+      // For now, let's assume it's for a teacher to see all their assignments.
+      if (req.user.role === "teacher") {
+        const assignments = await storage.getAssignmentsByTeacher(req.user.id);
+        res.json(assignments);
+      } else {
+        // Students should use /api/courses/:courseId/assignments
+        return res.status(403).json({ message: "Access denied. Please use course-specific assignment list." });
+      }
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch assignments" });
     }
@@ -267,23 +436,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Submission routes
-  app.get("/api/assignments/:assignmentId/submissions", requireAuth, async (req: any, res) => {
+  // This existing route GET /api/assignments/:assignmentId/submissions can be kept for teachers to list all submissions for an assignment.
+  app.get("/api/assignments/:assignmentId/submissions", requireAuth, async (req: AuthenticatedRequest, res) => {
     try {
-      const assignmentId = parseInt(req.params.assignmentId);
+      const assignmentId = parseInt(req.params.assignmentId, 10);
+      if (isNaN(assignmentId)) {
+        return res.status(400).json({ message: "Invalid assignment ID." });
+      }
       const assignment = await storage.getAssignment(assignmentId);
-      
       if (!assignment) {
         return res.status(404).json({ message: "Assignment not found" });
       }
 
-      if (req.user.role === "teacher" && assignment.teacherId === req.user.id) {
-        // Teacher can see all submissions for their assignment
+      if (req.user?.role === "teacher" && assignment.teacherId === req.user.id) {
         const submissions = await storage.getSubmissionsByAssignment(assignmentId);
         res.json(submissions);
-      } else if (req.user.role === "student") {
-        // Student can only see their own submission
-        const submission = await storage.getSubmissionByAssignmentAndStudent(assignmentId, req.user.id);
-        res.json(submission ? [submission] : []);
+      } else if (req.user?.role === 'student') {
+        // Students should use GET /api/submissions/:submissionId for their specific submission,
+        // or GET /api/courses/:courseId/assignments to see their submission status.
+        // Listing all submissions for an assignment is usually a teacher function.
+        return res.status(403).json({ message: "Students cannot list all submissions for an assignment." });
       } else {
         res.status(403).json({ message: "Not authorized" });
       }
@@ -291,7 +463,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ message: "Failed to fetch submissions" });
     }
   });
+  
+  app.get("/api/submissions/:submissionId", requireAuth, async (req: AuthenticatedRequest, res) => {
+    try {
+        const submissionId = parseInt(req.params.submissionId, 10);
+        if (isNaN(submissionId)) {
+            return res.status(400).json({ message: "Invalid submission ID." });
+        }
 
+        const submissionDetails = await storage.getSubmissionDetails(submissionId, req.user.id, req.user.role);
+
+        if ('error' in submissionDetails) {
+            if (submissionDetails.error.includes("not found")) return res.status(404).json({ message: submissionDetails.error });
+            if (submissionDetails.error.includes("Access denied")) return res.status(403).json({ message: submissionDetails.error });
+            return res.status(500).json({ message: submissionDetails.error });
+        }
+        res.json(submissionDetails);
+    } catch (error) {
+        console.error("Error fetching submission details:", error);
+        res.status(500).json({ message: "Failed to fetch submission details." });
+    }
+  });
+
+  // This existing POST /api/submissions can be deprecated or refactored if /api/assignments/:assignmentId/submit covers all student submission cases.
+  // For now, I'll leave it but note that the new endpoint is preferred for student submissions.
   app.post("/api/submissions", requireAuth, async (req: any, res) => {
     try {
       if (req.user.role !== "student") {

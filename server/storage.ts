@@ -26,6 +26,7 @@ export interface IStorage {
   getUser(id: number): Promise<User | undefined>;
   getUserByUsername(username: string): Promise<User | undefined>;
   createUser(user: InsertUser): Promise<User>;
+  updateUser(id: number, updates: Partial<Pick<User, 'name' | 'avatar'>>): Promise<User | undefined>; // Added updateUser
   
   // Courses
   getCourse(id: number): Promise<Course | undefined>;
@@ -63,6 +64,18 @@ export interface IStorage {
   getEnrollmentsByStudent(studentId: number): Promise<Enrollment[]>;
   createEnrollment(enrollment: InsertEnrollment): Promise<Enrollment>;
   updateEnrollment(id: number, updates: Partial<Enrollment>): Promise<Enrollment | undefined>;
+
+  // Course Discovery & Enrollment
+  getAvailableCoursesForStudent(studentId: number): Promise<Course[]>;
+  enrollStudentInCourse(studentId: number, courseId: number): Promise<Enrollment | { error: string }>;
+
+  // Course Content Access
+  getCourseWithContentForStudent(courseId: number, studentId: number): Promise<(Course & { content: Content[] }) | { error: string }>;
+
+  // Assignments & Submissions
+  getAssignmentsForCourse(courseId: number, userId: number, userRole: string): Promise<(Assignment & { submissionStatus?: string, submissionId?: number, grade?: number | null })[] | { error: string }>;
+  createOrUpdateSubmission(assignmentId: number, studentId: number, content: string, submissionId?: number): Promise<Submission | { error: string }>;
+  getSubmissionDetails(submissionId: number, userId: number, userRole: string): Promise<(Submission & { assignment: Assignment, student?: User, course?: Course }) | { error: string }>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -82,6 +95,18 @@ export class DatabaseStorage implements IStorage {
       .values(insertUser)
       .returning();
     return user;
+  }
+
+  async updateUser(id: number, updates: Partial<Pick<User, 'name' | 'avatar'>>): Promise<User | undefined> {
+    if (Object.keys(updates).length === 0) {
+      return this.getUser(id); // No updates, return current user
+    }
+    const [user] = await db
+      .update(users)
+      .set(updates)
+      .where(eq(users.id, id))
+      .returning();
+    return user || undefined;
   }
 
   async getCourse(id: number): Promise<Course | undefined> {
@@ -248,6 +273,225 @@ export class DatabaseStorage implements IStorage {
       .where(eq(enrollments.id, id))
       .returning();
     return enrollment || undefined;
+  }
+
+  async getAvailableCoursesForStudent(studentId: number): Promise<Course[]> {
+    // Get all active courses
+    const allActiveCourses = await db.select().from(courses).where(eq(courses.status, "active"));
+    
+    // Get all courses the student is already enrolled in
+    const studentEnrollments = await db.select().from(enrollments).where(eq(enrollments.studentId, studentId));
+    const enrolledCourseIds = studentEnrollments.map(e => e.courseId);
+
+    // Filter out enrolled courses
+    const availableCourses = allActiveCourses.filter(course => !enrolledCourseIds.includes(course.id));
+    
+    return availableCourses;
+  }
+
+  async enrollStudentInCourse(studentId: number, courseId: number): Promise<Enrollment | { error: string }> {
+    try {
+      const result = await db.transaction(async (tx) => {
+        // 1. Check if course exists and is active
+        const [course] = await tx.select().from(courses).where(eq(courses.id, courseId));
+        if (!course) {
+          return { error: "Course not found." };
+        }
+        if (course.status !== "active") {
+          return { error: "Course is not active and cannot be enrolled in." };
+        }
+
+        // 2. Check if student is already enrolled
+        const [existingEnrollment] = await tx.select().from(enrollments)
+          .where(eq(enrollments.studentId, studentId))
+          .where(eq(enrollments.courseId, courseId));
+        
+        if (existingEnrollment) {
+          return { error: "Student is already enrolled in this course." };
+        }
+
+        // 3. Create new enrollment
+        const [newEnrollment] = await tx.insert(enrollments).values({
+          studentId,
+          courseId,
+          enrolledAt: new Date(),
+          progress: 0,
+        }).returning();
+
+        // 4. Increment enrollmentCount on the course
+        const [updatedCourse] = await tx.update(courses)
+          .set({ enrollmentCount: (course.enrollmentCount || 0) + 1 })
+          .where(eq(courses.id, courseId))
+          .returning();
+
+        if (!updatedCourse) {
+          // This should ideally not happen if the course was found earlier
+          await tx.rollback(); // Manually trigger rollback if Drizzle version doesn't automatically
+          return { error: "Failed to update course enrollment count." };
+        }
+        
+        return newEnrollment;
+      });
+      return result;
+    } catch (error) {
+      console.error("Error in enrollStudentInCourse transaction:", error);
+      return { error: "An unexpected error occurred during enrollment." };
+    }
+  }
+
+  async getCourseWithContentForStudent(courseId: number, studentId: number): Promise<(Course & { content: Content[] }) | { error: string }> {
+    // 1. Verify enrollment
+    const [enrollment] = await db.select().from(enrollments)
+      .where(eq(enrollments.studentId, studentId))
+      .where(eq(enrollments.courseId, courseId));
+
+    if (!enrollment) {
+      return { error: "Student is not enrolled in this course." };
+    }
+
+    // 2. Fetch course details
+    const [courseDetails] = await db.select().from(courses).where(eq(courses.id, courseId));
+    if (!courseDetails) {
+      return { error: "Course not found." };
+    }
+
+    // 3. Fetch course content, ordered by 'order'
+    // Assuming 'content' table has an 'order' column. If not, Drizzle might not have 'asc' directly on column.
+    // For now, let's assume 'content.order' exists and 'asc' can be applied.
+    // If 'content.order' is not directly sortable this way, this might need adjustment or schema change.
+    const courseContentItems = await db.select().from(content)
+      .where(eq(content.courseId, courseId))
+      .orderBy(content.order); // Drizzle ORM typically handles .orderBy(schema.table.column) or .orderBy(asc(schema.table.column))
+
+    return {
+      ...courseDetails,
+      content: courseContentItems,
+    };
+  }
+
+  async getAssignmentsForCourse(courseId: number, userId: number, userRole: string): Promise<(Assignment & { submissionStatus?: string, submissionId?: number, grade?: number | null })[] | { error: string }> {
+    // Verify user has access to the course (either enrolled student or teacher)
+    const course = await this.getCourse(courseId);
+    if (!course) return { error: "Course not found." };
+
+    let isEnrolled = false;
+    if (userRole === 'student') {
+      const enrollment = await db.select().from(enrollments)
+        .where(eq(enrollments.studentId, userId))
+        .where(eq(enrollments.courseId, courseId));
+      if (enrollment.length > 0) isEnrolled = true;
+    }
+
+    if (userRole === 'teacher' && course.teacherId !== userId) {
+      return { error: "Teacher not authorized for this course." };
+    }
+    if (userRole === 'student' && !isEnrolled) {
+      return { error: "Student not enrolled in this course." };
+    }
+
+    const courseAssignments = await db.select().from(assignments).where(eq(assignments.courseId, courseId)).orderBy(assignments.dueDate);
+
+    if (userRole === 'student') {
+      const assignmentsWithSubmissions = await Promise.all(
+        courseAssignments.map(async (assignment) => {
+          const [submission] = await db.select().from(submissions)
+            .where(eq(submissions.assignmentId, assignment.id))
+            .where(eq(submissions.studentId, userId));
+          return {
+            ...assignment,
+            submissionStatus: submission?.status || 'not-submitted',
+            submissionId: submission?.id,
+            grade: submission?.grade,
+          };
+        })
+      );
+      return assignmentsWithSubmissions;
+    }
+    
+    // For teachers, just return the assignments
+    return courseAssignments.map(a => ({...a, submissionStatus: undefined, submissionId: undefined, grade: undefined }));
+  }
+
+  async createOrUpdateSubmission(assignmentId: number, studentId: number, submissionContent: string, submissionIdToUpdate?: number): Promise<Submission | { error: string }> {
+    // 1. Verify assignment exists
+    const assignment = await this.getAssignment(assignmentId);
+    if (!assignment) return { error: "Assignment not found." };
+
+    // 2. Verify student is enrolled in the course associated with the assignment
+    const course = await this.getCourse(assignment.courseId);
+    if (!course) return { error: "Course not found for this assignment."} // Should not happen if DB is consistent
+
+    const [enrollment] = await db.select().from(enrollments)
+      .where(eq(enrollments.studentId, studentId))
+      .where(eq(enrollments.courseId, assignment.courseId));
+    if (!enrollment) return { error: "Student not enrolled in the course for this assignment." };
+    
+    // 3. Check if it's an update or new submission
+    let existingSubmission: Submission | undefined = undefined;
+    if (submissionIdToUpdate) {
+        [existingSubmission] = await db.select().from(submissions).where(eq(submissions.id, submissionIdToUpdate)).where(eq(submissions.studentId, studentId));
+        if (!existingSubmission) return { error: "Submission to update not found or access denied." };
+    } else {
+        // For new submissions, or if ID not provided, check if one already exists for this assignment by this student
+        [existingSubmission] = await db.select().from(submissions)
+            .where(eq(submissions.assignmentId, assignmentId))
+            .where(eq(submissions.studentId, studentId));
+    }
+
+
+    if (existingSubmission) {
+      // Update existing submission
+      const [updatedSubmission] = await db.update(submissions)
+        .set({
+          content: submissionContent,
+          submittedAt: new Date(),
+          status: 'resubmitted', // Or 'pending' if resubmissions are treated as initial
+        })
+        .where(eq(submissions.id, existingSubmission.id))
+        .returning();
+      return updatedSubmission || { error: "Failed to update submission." };
+    } else {
+      // Create new submission
+      const [newSubmission] = await db.insert(submissions).values({
+        assignmentId,
+        studentId,
+        content: submissionContent,
+        submittedAt: new Date(),
+        status: 'submitted', // Or 'pending'
+      }).returning();
+      return newSubmission || { error: "Failed to create submission." };
+    }
+  }
+
+  async getSubmissionDetails(submissionId: number, userId: number, userRole: string): Promise<(Submission & { assignment: Assignment, student?: User, course?: Course }) | { error: string }> {
+    const [submission] = await db.select().from(submissions).where(eq(submissions.id, submissionId));
+    if (!submission) return { error: "Submission not found." };
+
+    const assignment = await this.getAssignment(submission.assignmentId);
+    if (!assignment) return { error: "Assignment not found for this submission." }; // Should not happen
+
+    const course = await this.getCourse(assignment.courseId);
+    if (!course) return { error: "Course not found for this assignment." }; // Should not happen
+
+    // Authorization check
+    if (userRole === 'student' && submission.studentId !== userId) {
+      return { error: "Access denied. You are not the owner of this submission." };
+    }
+    if (userRole === 'teacher' && course.teacherId !== userId) {
+      return { error: "Access denied. You are not the teacher of this course." };
+    }
+    
+    let studentData: User | undefined = undefined;
+    if (userRole === 'teacher') { // Teacher might want to see student details
+        studentData = await this.getUser(submission.studentId);
+    }
+
+    return {
+      ...submission,
+      assignment,
+      student: studentData, // Only populated for teacher
+      course, // Added course for context
+    };
   }
 }
 
