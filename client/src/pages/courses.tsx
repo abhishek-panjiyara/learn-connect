@@ -12,6 +12,14 @@ import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
 
+/**
+ * Displays and manages courses for authenticated users, providing role-based functionality for teachers and students.
+ *
+ * Teachers can view, search, and manage their courses, as well as create new ones. Students can view enrolled courses, search available courses, and enroll in new courses. The component handles loading, error, and empty states for both enrolled and available courses, and updates the UI reactively based on user actions and API responses.
+ *
+ * @remark
+ * The available courses section and enrollment actions are only accessible to students. Teachers see management options and course creation controls.
+ */
 export default function Courses() {
   const { user } = useAuth();
   const { toast } = useToast();
@@ -20,50 +28,69 @@ export default function Courses() {
   const [showCreateModal, setShowCreateModal] = useState(false);
 
   const { data: userCourses = [] } = useQuery({
-    queryKey: ["/api/courses"],
+    queryKey: ["/api/courses"], // Fetches courses user is enrolled in or teaches
+    enabled: !!user, // Only run if user is loaded
   });
 
-  const { data: allCourses = [] } = useQuery({
-    queryKey: ["/api/courses/all"],
-  });
+  const isTeacher = user?.role === "teacher";
 
-  const enrollMutation = useMutation({
-    mutationFn: async (courseId: number) => {
-      const res = await apiRequest("POST", "/api/enrollments", { courseId });
+  // Fetch available courses for students
+  const { 
+    data: availableCourses = [], 
+    isLoading: isLoadingAvailableCourses,
+    error: availableCoursesError 
+  } = useQuery<any[]>({ // Replace 'any' with a Course type if available
+    queryKey: ["/api/courses/available"],
+    queryFn: async () => {
+      const res = await apiRequest("GET", "/api/courses/available");
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || "Failed to fetch available courses");
+      }
       return res.json();
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/courses"] });
+    enabled: !!user && !isTeacher, // Only run if user is loaded and is a student
+  });
+  
+  const enrollMutation = useMutation({
+    mutationFn: async (courseId: number) => {
+      const res = await apiRequest("POST", `/api/courses/${courseId}/enroll`); // Corrected endpoint
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.message || `Failed to enroll in course ${courseId}`);
+      }
+      return res.json();
+    },
+    onSuccess: (data, courseId) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/courses"] }); // Refreshes enrolled courses
+      queryClient.invalidateQueries({ queryKey: ["/api/courses/available"] }); // Refreshes available courses
       toast({
         title: "Enrolled successfully!",
         description: "You can now access the course content.",
       });
     },
-    onError: () => {
+    onError: (error: Error, courseId) => { // Added courseId to parameters for more specific error
       toast({
         title: "Enrollment failed",
-        description: "Unable to enroll in the course.",
+        description: error.message || `An error occurred while enrolling in course ${courseId}.`,
         variant: "destructive",
       });
     },
   });
-
-  const isTeacher = user?.role === "teacher";
-  const enrolledCourseIds = new Set(userCourses.map((course: any) => course.id));
   
-  const availableCourses = allCourses.filter((course: any) => 
-    !enrolledCourseIds.has(course.id) && 
-    course.teacherId !== user?.id &&
-    course.status === "active"
-  );
+  const enrolledCourseIds = new Set(userCourses.map((course: any) => course.id));
 
   const filteredUserCourses = userCourses.filter((course: any) =>
     course.title.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const filteredAvailableCourses = availableCourses.filter((course: any) =>
-    course.title.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // Students see courses from /api/courses/available, teachers don't need this section filtered this way
+  const filteredAvailableCourses = isTeacher 
+    ? [] 
+    : availableCourses.filter((course: any) =>
+        course.title.toLowerCase().includes(searchTerm.toLowerCase()) &&
+        !enrolledCourseIds.has(course.id) // Ensure it's not already in their enrolled list (client-side check for immediate UI update)
+      );
 
   return (
     <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
@@ -143,8 +170,12 @@ export default function Courses() {
                             <Users className="mr-1 h-4 w-4" />
                             <span>{course.enrollmentCount || 0} students</span>
                           </div>
-                          <Button variant="outline" size="sm">
-                            View Course
+                          <Button 
+                            variant="outline" 
+                            size="sm"
+                            onClick={() => setLocation(`/courses/${course.id}/content`)} // Navigate to content page
+                          >
+                            {isTeacher ? "Manage Content" : "View Content"}
                           </Button>
                         </div>
                       </CardContent>
@@ -181,10 +212,11 @@ export default function Courses() {
             {!isTeacher && (
               <div>
                 <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">
-                  Available Courses
+                  Available Courses to Enroll
                 </h2>
-                
-                {filteredAvailableCourses.length > 0 ? (
+                {isLoadingAvailableCourses && <p>Loading available courses...</p>}
+                {availableCoursesError && <p className="text-red-500">Error: {availableCoursesError.message}</p>}
+                {!isLoadingAvailableCourses && !availableCoursesError && filteredAvailableCourses.length > 0 ? (
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                     {filteredAvailableCourses.map((course: any) => (
                       <Card key={course.id} className="hover:shadow-lg transition-shadow">
@@ -192,11 +224,11 @@ export default function Courses() {
                           <div className="flex items-start justify-between">
                             <div className="flex-1">
                               <CardTitle className="text-lg">{course.title}</CardTitle>
-                              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+                              <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 truncate">
                                 {course.description || "No description available"}
                               </p>
                             </div>
-                            <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-400">
+                            <Badge className="bg-emerald-100 text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-400 shrink-0">
                               {course.status}
                             </Badge>
                           </div>
@@ -210,9 +242,9 @@ export default function Courses() {
                             <Button 
                               size="sm"
                               onClick={() => enrollMutation.mutate(course.id)}
-                              disabled={enrollMutation.isPending}
+                              disabled={enrollMutation.isPending && enrollMutation.variables === course.id}
                             >
-                              {enrollMutation.isPending ? "Enrolling..." : "Enroll"}
+                              {enrollMutation.isPending && enrollMutation.variables === course.id ? "Enrolling..." : "Enroll"}
                             </Button>
                           </div>
                         </CardContent>
@@ -220,20 +252,22 @@ export default function Courses() {
                     ))}
                   </div>
                 ) : (
-                  <Card>
-                    <CardContent className="text-center py-12">
-                      <BookOpen className="mx-auto h-12 w-12 text-gray-400" />
-                      <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">
-                        No available courses
-                      </h3>
-                      <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-                        {searchTerm 
-                          ? "No courses match your search criteria." 
-                          : "There are no new courses available for enrollment at the moment."
-                        }
-                      </p>
-                    </CardContent>
-                  </Card>
+                  !isLoadingAvailableCourses && !availableCoursesError && (
+                    <Card>
+                      <CardContent className="text-center py-12">
+                        <BookOpen className="mx-auto h-12 w-12 text-gray-400" />
+                        <h3 className="mt-2 text-sm font-medium text-gray-900 dark:text-white">
+                          No available courses
+                        </h3>
+                        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                          {searchTerm 
+                            ? "No courses match your search criteria." 
+                            : "There are no new courses available for enrollment at the moment, or you are already enrolled in all active courses."
+                          }
+                        </p>
+                      </CardContent>
+                    </Card>
+                  )
                 )}
               </div>
             )}

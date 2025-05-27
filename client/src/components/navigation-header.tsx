@@ -1,4 +1,4 @@
-import { Bell, ChevronDown, LogOut } from "lucide-react";
+import { Bell, ChevronDown, LogOut, UserCircle } from "lucide-react"; // Added UserCircle
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -13,6 +13,11 @@ import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 
+/**
+ * Renders the main navigation bar with user-specific links and a user menu.
+ *
+ * Displays navigation items based on the user's role, provides access to notifications, and includes a dropdown menu for profile settings, preferences, and signing out. Handles user logout by clearing cached data, showing a confirmation toast, and redirecting to the login page.
+ */
 export function NavigationHeader() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();
@@ -93,7 +98,12 @@ export function NavigationHeader() {
                   </span>
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem>Profile Settings</DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <a href="/profile" className="flex items-center"> {/* Changed to <a> tag and added href */}
+                    <UserCircle className="mr-2 h-4 w-4" /> {/* Added icon */}
+                    Profile Settings
+                  </a>
+                </DropdownMenuItem>
                 <DropdownMenuItem>Preferences</DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem 
