@@ -315,10 +315,17 @@ export class DatabaseStorage implements IStorage {
         }
 
         // 2. Check if student is already enrolled
-        const [existingEnrollment] = await tx.select().from(enrollments)
-          .where(eq(enrollments.studentId, studentId))
-          .where(eq(enrollments.courseId, courseId));
-        
+-        const [existingEnrollment] = await tx.select().from(enrollments)
+-          .where(eq(enrollments.studentId, studentId))
+-          .where(eq(enrollments.courseId, courseId));
++        const [existingEnrollment] = await tx
++          .select()
++          .from(enrollments)
++          .where(and(
++            eq(enrollments.studentId, studentId),
++            eq(enrollments.courseId, courseId)
++          ));
+
         if (existingEnrollment) {
           return { error: "Student is already enrolled in this course." };
         }
@@ -342,7 +349,7 @@ export class DatabaseStorage implements IStorage {
           await tx.rollback(); // Manually trigger rollback if Drizzle version doesn't automatically
           return { error: "Failed to update course enrollment count." };
         }
-        
+
         return newEnrollment;
       });
       return result;
