@@ -13,6 +13,11 @@ import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 
+/**
+ * Renders the main navigation bar with user-specific links and a user menu.
+ *
+ * Displays navigation items based on the user's role, provides access to notifications, and includes a dropdown menu for profile settings, preferences, and signing out. Handles user logout by clearing cached data, showing a confirmation toast, and redirecting to the login page.
+ */
 export function NavigationHeader() {
   const { user } = useAuth();
   const [, setLocation] = useLocation();

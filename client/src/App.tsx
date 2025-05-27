@@ -15,6 +15,14 @@ import ProfilePage from "@/pages/profile";
 import SubmitAssignmentPage from "@/pages/submit-assignment"; // Import the SubmitAssignmentPage component
 import { useAuth } from "@/hooks/use-auth";
 
+/**
+ * Renders a component only if the user is authenticated and, optionally, has an allowed role.
+ *
+ * If authentication is loading, displays a loading spinner. If the user is not authenticated, renders the login page. If the user's role is not permitted, renders a not found page. Otherwise, renders the specified component.
+ *
+ * @param component - The component to render if access is granted.
+ * @param allowedRoles - Optional list of user roles permitted to access the component.
+ */
 function ProtectedRoute({ component: Component, allowedRoles }: { component: any, allowedRoles?: string[] }) {
   const { user, isLoading } = useAuth();
 
@@ -37,6 +45,11 @@ function ProtectedRoute({ component: Component, allowedRoles }: { component: any
   return <Component />;
 }
 
+/**
+ * Defines the application's route structure and access control.
+ *
+ * Configures routes for authentication, dashboard, courses, assignments, profile, and dynamic course content and assignment submission pages. Most routes are protected by authentication and, where specified, role-based access using the {@link ProtectedRoute} component. Unmatched routes render the {@link NotFound} page.
+ */
 function Router() {
   return (
     <Switch>
