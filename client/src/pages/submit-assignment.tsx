@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { useRoute, Link } from 'wouter';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { apiRequest, Assignment, Submission } from '@/lib/queryClient'; // Assuming these types exist
+-import { apiRequest, Assignment, Submission } from '@/lib/queryClient';   
++import { apiRequest, Assignment, Submission, AssignmentWithSubmissionStatus } from '@/lib/queryClient';
++import { Label } from '@/components/ui/label';
 import { AlertTriangle, ArrowLeft, Send, CheckCircle, Edit3 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
@@ -11,7 +13,6 @@ import { NavigationHeader } from '@/components/navigation-header';
 import { Sidebar } from '@/components/sidebar';
 import { useAuth } from '@/hooks/use-auth';
 import { useToast } from '@/hooks/use-toast';
-
 // Define a more detailed Submission type if it includes assignment, student, course
 type SubmissionDetails = Submission & {
   assignment?: Assignment; 
