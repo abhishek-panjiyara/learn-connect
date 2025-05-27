@@ -59,7 +59,7 @@ const CourseContentPage: React.FC = () => {
     );
   }
 
-  if (isLoading) {
+  if (isLoadingCourse) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
         <NavigationHeader />
@@ -74,7 +74,7 @@ const CourseContentPage: React.FC = () => {
     );
   }
 
-  if (error) {
+  if (courseError) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
         <NavigationHeader />
